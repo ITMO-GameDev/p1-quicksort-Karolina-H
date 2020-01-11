@@ -6,6 +6,10 @@
 #include <iomanip>
 #endif
 
+
+// аллокатор выделения памяти фиксированного размера (но не более 512 байт)
+// выделяет блоки памяти фиксированного размера
+// для каждого размера - свой свободный список блоков
 class FSAllocator
 {
     enum { ALIGN = 8 };
@@ -40,43 +44,48 @@ public:
 private:
     using BucketMap = unsigned short;
 
+    // список блоков памяти
     struct BlockList
     {
-        void* chunk;
-        BlockList* next;
+        void* chunk; // зарезервированная область памяти блока
+        BlockList* next; // следующий блок
     };
 
+    // список свободных ячеек памяти фиксированного размера
     union FreeList
     {
-        FreeList* next;
+        FreeList* next; // следующая ячейка
 
+        // структура заголовка выделенной памяти
+        // пишется при запросе памяти у аллокатора в возвращаемый объект
         struct Header
         {
-            uint64_t size;
+            uint64_t size; // размер запрошенной памяти
 
             void init(uint64_t sz)
-            {
+            { // инициализация. "магические" числа для проверки, что память выделилась нашим аллокатором
                 size = 0xdead;
                 size <<= 48;
                 size |= sz;
             }
-
+            // размер запрошенной памяти из заголовка
             uint64_t getSize() const { return size & 0x0000'ffff'ffff'ffff; }
-
+            // память возвращена
             void release() { size = 0; }
-
+            // проверка, что память выделилась нашим аллокатором
             bool isValid() const { return ((size >> 48) & 0xffff) == 0xdead; }
         } header;
     };
 
+    // списки блоков и свободных ячеек для определенного фиксираванного размера памяти
     struct Bucket
     {
-        FreeList* first = nullptr;
-        BlockList* address = nullptr;
+        FreeList* first = nullptr; // список свободных ячеек памяти
+        BlockList* address = nullptr; // список блоков памяти
     };
 
-    BucketMap* bucket_map = nullptr;
-    Bucket* buckets = nullptr;
+    BucketMap* bucket_map = nullptr; // для быстрого доступа к нужному Bucket'у по запрошенному размеру
+    Bucket* buckets = nullptr; // для каждого фиксированного размера - свой набор блоков памяти и свободных ячеек в них
 
 #ifndef NDEBUG
     enum class State
@@ -92,7 +101,10 @@ private:
 void FSAllocator::init()
 {
     assert(state != State::Initialized);
-
+    // инициализируем bucket_map так, чтобы для запрошенной памяти в size байт
+    // значение bucket_map[size] давал штдекс нужного Bucket'а
+    // т.е. bucket_map[5] дает индекс 0 (для фиксированного блока размером 16 байт),
+    // bucket_map[55] дает индекс 2 (для фиксированного блока размером 64 байт) и т.д.
     bucket_map = ::new BucketMap[MAX_BYTES + 1];
     BucketMap* pbucket_type = bucket_map;
     BucketMap bucket_type_max = MIN_BYTES;
@@ -119,20 +131,20 @@ void FSAllocator::destroy()
 
     if (buckets)
     {
-        for (BucketMap i = 0; i < BUCKETS_COUNT; ++i)
+        for (BucketMap i = 0; i < BUCKETS_COUNT; ++i) // для всех Bucket'ов
         {
 #ifndef NDEBUG
             const BucketMap bucket_type_size = (MIN_BYTES << i) + ALIGN;
             const size_t bucket_type_count = (CHUNK_SIZE - sizeof(BlockList)) / bucket_type_size;
 #endif
             Bucket& bucket = buckets[i];
-            while (bucket.address)
+            while (bucket.address) // для всех блоков в текущем Bucket'е
             {
                 BlockList* block = bucket.address;
-#ifndef NDEBUG
+#ifndef NDEBUG // в отладке
                 char* ptr = static_cast<char*>(block->chunk) + sizeof(BlockList);
                 for (size_t j = 0; j < bucket_type_count; ++j)
-                {
+                { // просмотр всех ячеек памяти в блоке на наличие неосвобожденных
                     const FreeList* record = reinterpret_cast<const FreeList*>(ptr);
                     if (record->header.isValid())
                     {
@@ -144,7 +156,7 @@ void FSAllocator::destroy()
                 }
 #endif
                 bucket.address = block->next;
-                ::operator delete(block->chunk);
+                ::operator delete(block->chunk); // удаляем блок
             }
         }
         ::delete[] buckets;
@@ -160,25 +172,28 @@ void* FSAllocator::alloc(size_t nbytes)
     assert(state == State::Initialized);
 
     char* result = nullptr;
-    if (nbytes > MAX_BYTES)
+    if (nbytes > MAX_BYTES) // максимальный размер фиксированного блока == MAX_BYTES, запросы большего размера - не наше дело
     {
-        result = static_cast<char*>(::operator new(nbytes + ALIGN));
+        result = static_cast<char*>(::operator new(nbytes + ALIGN)); // размер + заголовок
         FreeList* record = reinterpret_cast<FreeList*>(result);
+        // пишем заголовок, чтобы определить, что запрос на память был через аллокатор
+        // для корректного освобождения памяти через него же
         record->header.init(nbytes);
         result += ALIGN;
     }
     else if (nbytes > 0)
     {
         FreeList* record;
-        BucketMap which = bucket_map[nbytes];
+        BucketMap which = bucket_map[nbytes]; // определяем индекс Bucket'а
         Bucket& bucket = buckets[which];
-        if (!bucket.first)
+        if (!bucket.first) // если свободных ячеек нет
         {
             const BucketMap bucket_type_size = (MIN_BYTES << which) + ALIGN;
             size_t bucket_type_count = (CHUNK_SIZE - sizeof(BlockList)) / bucket_type_size;
-
+            // выделяем память под новый блок
             void* chunk = ::operator new(CHUNK_SIZE);
             BlockList* block = static_cast<BlockList*>(chunk);
+            // вставляем его в список блоков
             block->chunk = chunk;
             block->next = bucket.address;
             bucket.address = block;
@@ -186,6 +201,7 @@ void* FSAllocator::alloc(size_t nbytes)
             char* ptr = static_cast<char*>(chunk) + sizeof(BlockList);
             record = reinterpret_cast<FreeList*>(ptr);
             bucket.first = record;
+            // размечаем в блоке список свободных ячеек
             while (--bucket_type_count > 0)
             {
                 ptr += bucket_type_size;
@@ -194,11 +210,11 @@ void* FSAllocator::alloc(size_t nbytes)
             }
             record->next = 0;
         }
-        record = bucket.first;
+        record = bucket.first; // берем первую свободную ячейку
         bucket.first = record->next;
 
-        record->header.init(nbytes);
-        result = reinterpret_cast<char*>(record) + ALIGN;
+        record->header.init(nbytes); // инициализируем ее
+        result = reinterpret_cast<char*>(record) + ALIGN; // возвращаемый указатель
     }
     return static_cast<void*>(result);
 }
@@ -213,11 +229,11 @@ void FSAllocator::free(void* ptr)
         FreeList* record = reinterpret_cast<FreeList*>(p);
 
         assert(record->header.isValid());
-
+        // получаем размер запрошенной памяти
         auto nbytes = record->header.getSize();
         record->header.release();
         
-        if (nbytes > MAX_BYTES)
+        if (nbytes > MAX_BYTES) // выделили не мы
         {
             ::operator delete(p);
         }
@@ -226,14 +242,17 @@ void FSAllocator::free(void* ptr)
             BucketMap which = bucket_map[nbytes];
             Bucket& bucket = buckets[which];
             FreeList* block = reinterpret_cast<FreeList*>(p);
-
+            // возвращаем память в список свободных ячеек
             block->next = bucket.first;
             bucket.first = block;
         }
     }
 }
 
-
+// аллокатор для запросов памяти размером большим, чем 512 байт
+// хранит список свободных блоков. размер блоков не детерминирован
+// при возвращении памяти аллокатору, при возможности, объеденяет соседние
+// свободные блоки в 1 бОльший
 class CoaleseAllocator
 {
     enum { ALIGN = 8 };
@@ -276,12 +295,14 @@ public:
 
 private:
     struct Header;
+    
+    // список блоков памяти
     struct BlockList
     {
-        void* chunk;
-        BlockList* next;
-        Header* first;
-        size_t size;
+        void* chunk; // зарезервированная блоком область памяти 
+        BlockList* next; // следущий блок
+        Header* first; // список свободных записей в блоке
+        size_t size; // размер блока
 
         Header* getFirstRecord() const
         {
@@ -292,8 +313,10 @@ private:
 
     struct Header
     {
-        Header* next_or_first;
-        uint64_t size;
+        Header* next_or_first; // указатель на следущую свободную запись для свободной записи
+                               // и указатель на первую запись в блоке для выделенной пользователю
+        uint64_t size; // размер памяти записи, кратен 8, поэтому младший бит используем, как
+                       // индикатор, является ли запись свободний или выделенной пользователю
 
         void init(uint64_t sz)
         {
@@ -309,14 +332,15 @@ private:
             return size & 0x0000'ffff'ffff'ffff;
         }
 
-        void aquire() { size |= 1; }
+        void aquire() { size |= 1; } // пометить как выделенную пользователю
 
-        void release() { size &= ~1; }
+        void release() { size &= ~1; } // пометить как свободную
 
-        bool isBusy() const { return size & 1; }
+        bool isBusy() const { return size & 1; } // занята/свободна?
 
         bool isValid() const { return ((size >> 48) & 0xffff) == 0xdead; }
 
+        // следующая за текущей запись
         Header* nextHeader()
         {
             char* p = reinterpret_cast<char*>(this) + align(sizeof(Header));
@@ -324,6 +348,7 @@ private:
             return reinterpret_cast<Header*>(p);
         }
 
+        // объединить со следующей записью
         void coalese(Header* rhs)
         {
             size_t coalese_size = (size_t)(getSize() + align(sizeof(Header)) + rhs->getSize());
@@ -332,6 +357,7 @@ private:
         }
     };
 
+    // размер кратный выравниванию
     template<typename T, uint8_t Align = ALIGN>
     static T align(T val) { return (val + Align - 1) & ~static_cast<T>(Align - 1); }
 
@@ -354,14 +380,14 @@ void CoaleseAllocator::destroy()
 {
     assert(state != State::Destroyed);
 
-    while (block_list)
+    while (block_list) // проход по всем блокам
     {
         BlockList* block = block_list;
-#ifndef NDEBUG
+#ifndef NDEBUG // в отладке
         Header* record = block->getFirstRecord();
         size_t size = align(sizeof(Header));
-        while (record && size < block->size)
-        {
+        while (record && size < block->size) // по всем записям блока
+        { // смотрим все записи на наличие занятых (не освобожденных)
             size += (size_t)record->getSize();
             if (record->isBusy())
             {
@@ -373,7 +399,7 @@ void CoaleseAllocator::destroy()
         }
 #endif // !NDEBUG
         block_list = block->next;
-        ::operator delete(block->chunk);
+        ::operator delete(block->chunk); // удаляем блок
     }
 
 #ifndef NDEBUG
@@ -386,7 +412,7 @@ void* CoaleseAllocator::alloc(size_t nbytes)
     assert(state == State::Initialized);
 
     char* result = nullptr;
-    if (nbytes > MAX_BYTES)
+    if (nbytes > MAX_BYTES) // > 10M - запрос памяти напрямую у ОС
     {
         size_t alloc_size = align(sizeof(Header)) + nbytes;
         result = static_cast<char*>(::operator new(alloc_size));
@@ -400,23 +426,25 @@ void* CoaleseAllocator::alloc(size_t nbytes)
         Header* record = nullptr;
         Header* prev_record = nullptr;
         while (block)
-        {
+        { // поиск по блокам свободной памяти нужного размера
             record = block->first;
             while (record && (size_t)record->getSize() < nbytes)
-            {
+            { // по всем свободным записям блока
                 prev_record = record;
                 record = record->next_or_first;
             }
             if (record)
-                break;
+                break; // найдена
             block = block->next;
         }
         if (!record)
-        {
+        { // нет нужного размера
             size_t block_size = align(sizeof(BlockList)) + align(sizeof(Header)) + nbytes;
             block_size = block_size > CHUNK_SIZE ? block_size : CHUNK_SIZE;
+            // выделяем память под новый блок достаточного размера
             reserveBlock(block_size);
             block = block_list;
+            // получаем первую (свободную) запись нового блока
             record = block->getFirstRecord();
             prev_record = nullptr;
         }
@@ -425,15 +453,16 @@ void* CoaleseAllocator::alloc(size_t nbytes)
         size_t result_size = size_avail;
         Header* next_record = nullptr;
         if (size_avail - nbytes < MIN_BYTES)
-        {
+        { // если полученную запись нельзя разделить на требуемый размер и минимальный остаток
             if (prev_record)
                 prev_record->next_or_first = record->next_or_first;
             else
                 block->first = record->next_or_first;
         }
         else
-        {
+        { // иначе разделяем участок памяти на 2 записи
             result_size = align(nbytes);
+            // 2-я часть - следующая свободная запись
             next_record = (Header*)((char*)(record)+align(sizeof(Header)) + result_size);
             next_record->init(size_avail - result_size);
             next_record->next_or_first = record->next_or_first;
@@ -443,11 +472,11 @@ void* CoaleseAllocator::alloc(size_t nbytes)
             else
                 block->first = next_record;
         }
-
+        // в возвращаемой записи запоминаем первую запись блока, к которому принадлежит
         record->next_or_first = block->getFirstRecord();
-        record->init(result_size);
-        record->aquire();
-        result = reinterpret_cast<char*>(record) + align(sizeof(Header));
+        record->init(result_size); // инициализируем
+        record->aquire(); // помечаем занятой
+        result = reinterpret_cast<char*>(record) + align(sizeof(Header)); // возвращаемый пользователю указатель
     }
     return static_cast<void*>(result);
 }
@@ -464,7 +493,7 @@ void CoaleseAllocator::free(void* ptr)
         assert(record->isValid());
 
         size_t nbytes = (size_t)record->getSize(false);
-        if (nbytes > MAX_BYTES)
+        if (nbytes > MAX_BYTES)  // > 10M
         {
             ::operator delete(p);
         }
@@ -472,18 +501,19 @@ void CoaleseAllocator::free(void* ptr)
         {
             assert(record->isBusy());
 
-            record->release();
-
+            record->release(); // помечаем как свободную
+            // получаем "родной" блок
             p = reinterpret_cast<char*>(record->next_or_first) - align(sizeof(BlockList));
             BlockList* block = reinterpret_cast<BlockList*>(p);
-
+            // возвращаем запись в список свободных блока
             if (!block->first)
-            {
+            { // если пустых блоков нет - будет первой
                 record->next_or_first = block->first;
                 block->first = record;
             }
             else if (record < block->first)
-            {
+            { // в начало списка
+                // проверяем на возможность слияния со следующей записью
                 if (record->nextHeader() == block->first)
                     record->coalese(block->first);
                 else
@@ -495,11 +525,13 @@ void CoaleseAllocator::free(void* ptr)
                 Header* prev_record = block->first;
                 Header* next_record = prev_record->next_or_first;
                 while (next_record && next_record < record)
-                {
+                { // ищем место для вставки
                     prev_record = next_record;
                     next_record = next_record->next_or_first;
                 }
 
+                // проверяем на возможность слияния с соседями
+                
                 if (next_record && record->nextHeader() == next_record)
                     record->coalese(next_record);
                 else
@@ -513,13 +545,16 @@ void CoaleseAllocator::free(void* ptr)
         }
     }
 }
+
+// резервируем блок памяти
 void CoaleseAllocator::reserveBlock(size_t nbytes)
 {
-    void* chunk = ::operator new(nbytes);
+    void* chunk = ::operator new(nbytes); // зарезервированная память
     BlockList* block = static_cast<BlockList*>(chunk);
     block->chunk = chunk;
 
     char* ptr = static_cast<char*>(chunk) + align(sizeof(BlockList));
+    // первая и единственная запись списка свободной памяти
     Header* record = reinterpret_cast<Header*>(ptr);
     record->next_or_first = nullptr;
     nbytes -= align(sizeof(BlockList));
