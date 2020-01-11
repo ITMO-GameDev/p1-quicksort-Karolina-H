@@ -2,6 +2,7 @@
 #define SORT_H_INCLUDED
 #include <utility>
 
+// сортировка вставками
 template<typename T, typename Cmp>
 void insertion_sort(T* begin, T* end, Cmp comp)
 {
@@ -19,6 +20,7 @@ void insertion_sort(T* begin, T* end, Cmp comp)
 	}
 }
 
+// разделение интервала
 template<typename T, typename Cmp>
 T* partition(T* first, T* last, Cmp comp)
 {
@@ -42,7 +44,7 @@ void sort(T* begin, T* end, Cmp comp)
 {
 	while (begin < end - 1)
 	{
-		if (end - begin < 16)
+		if (end - begin < 16) // для коротких интервалов - сортируем вставками
 		{
 			insertion_sort(begin, end, comp);
 			break;
@@ -51,6 +53,7 @@ void sort(T* begin, T* end, Cmp comp)
 		{
 			auto pivot = partition(begin, end - 1, comp);
 
+		 // выбор интарвала меньшей длины для рекурсивной обработки
 			if (pivot - begin < end - pivot) {
 				sort(begin, pivot, comp);
 				begin = pivot + 1;
@@ -60,6 +63,7 @@ void sort(T* begin, T* end, Cmp comp)
 				end = pivot;
 			}
 		}
+	        // для большего интервала - следущая итерация
 	}
 }
 
