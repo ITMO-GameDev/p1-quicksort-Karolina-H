@@ -5,10 +5,13 @@
 #include <cassert>
 #include <utility>
 
+// класс ассоциативного массива
+// на остнове красно-черного дерева
 template<typename K, typename V>
 class Dictionary
 {
     enum class Color { Black, Red };
+    // класс узла дерева
     struct Node
     {
         Node* parent = nullptr;
@@ -18,12 +21,14 @@ class Dictionary
         V value;
         Color color;
 
+        // новый узел - красный по умолчанию
         Node(const K& k, const V& v, Color c = Color::Red)
             : key(k)
             , value(v)
             , color(c)
         { }
 
+        // копия узла
         Node* clone() const { return new Node(key, value, color); }
     };
 
@@ -49,14 +54,17 @@ public:
         return *this;
     }
 
+    // индексация
     V& operator[](const K& key)
     {
         Node* result = nullptr;
         Node* node_parent = nullptr;
         result = find(key, &node_parent);
         if (!result || result->key != key)
-        {
+        {   // если элемента с ключом key не существует
+            // создаем новый узел
             auto node = new Node(key, V{});
+            // вставляем его
             result = insert(node, node_parent);
         }
         return result->value;
@@ -66,30 +74,33 @@ public:
     {
         static V default_value;
         auto result = find(key);
+        // если ключ найден, вернем его значение, иначе - значение по умолчанию
         return result ? result->value : default_value;
     }
 
+    // добавляет пару в массива
     void put(const K& key, const V& value)
     {
         Node* node_parent = nullptr;
 
         auto tmp = find(key, &node_parent);
         if (tmp && tmp->key == key)
-        {
+        { // если ключ найден, изменяем значение
             tmp->value = value;
         }
         else
-        {
+        { // иначе вставляем новый узел
             auto node = new Node(key, value);
             insert(node, node_parent);
         }
     }
 
+    // удалить элемент с указанным ключом
     void remove(const K& key)
     {
         Node* node = find(key);
-        if (node)
-        {
+        if (node) // если есть такой элемент
+        { 
             Node* successor = node;
             Node* parent = nullptr;
             Node* child = nullptr;
@@ -99,29 +110,38 @@ public:
             else if (!successor->right)
                 child = successor->left;
             else
-            {
+            { // если узел имеет оба дочерних узла
+                // находим узел с последующим значением
+                // в отсортированной последовательности
                 successor = successor->right;
                 while (successor->left)
                     successor = successor->left;
+                // и его потомка
                 child = successor->right;
             }
 
             if (successor != node)
-            {
+            { // если узел имеет оба дочерних узла, перенацеливаем узлы, исключая node из связи
+                // перенацеливаем родителя левого потомка узла node
                 node->left->parent = successor;
+                // перенацеливаем левого потомка узла successor
                 successor->left = node->left;
                 if (successor != node->right)
-                {
+                { // если последующий узел не является сразу правым потомком
                     parent = successor->parent;
+                    // перенацеливаем потомка узла successor
                     if (child)
                         child->parent = successor->parent;
                     successor->parent->left = child;
+                    // перенацеливаем правого потомка узла successor
                     successor->right = node->right;
+                    // и родителя потомка
                     successor->right->parent = successor;
                 }
                 else
                     parent = successor;
 
+                // перенацеливаем родителя node на successor
                 if (root == node)
                     root = successor;
                 else if (node->parent->left == node)
@@ -133,7 +153,7 @@ public:
                 std::swap(successor->color, node->color);
                 successor = node;
             }
-            else
+            else // удаляемый узел имеет не более 1 потомка
             {
                 parent = successor->parent;
                 if (child)
@@ -147,13 +167,15 @@ public:
                     node->parent->right = child;
             }
 
-            if (successor->color == Color::Black)
+            if (successor->color == Color::Black) // если удалили черный узел
+                // восстанавливаем красно-черное свойство (черную высоту)
                 rebalanceDeletion(child, parent);
             delete node;
             --nodes_count;
         }
     }
 
+    // существование элемента с зажанным ключом
     bool contains(const K& key) const
     {
         auto result = find(key);
@@ -173,6 +195,7 @@ public:
     }
 
 private:
+    // поиск узла по заданному ключу, если найден - в hint предок узла
     Node* find(const K& key, Node** hint = nullptr) const
     {
         auto result = root;
@@ -192,26 +215,29 @@ private:
         return result;
     }
 
+    // создает копию дерева с корнем в from,
+    // устанавливая предка для корня в parent
     Node* copy(Node* from, Node* parent)
     {
-        Node* result = from->clone();
-        result->parent = parent;
+        Node* result = from->clone(); // создаем копию узла
+        result->parent = parent; // назначаем ему предка
         try
         {
-            if (from->right)
+            if (from->right) // полное копирование правого поддерева
                 result->right = copy(from->right, result);
             parent = result;
             from = from->left;
 
             while (from)
-            {
+            { // вглубь к самому левому потомку
+                // создаем копию левого узла
                 Node* node = from->clone();
                 parent->left = node;
                 node->parent = parent;
-                if (from->right)
+                if (from->right) // полное копирование правого поддерева левого потомка
                     node->right = copy(from->right, node);
                 parent = node;
-                from = from->left;
+                from = from->left;  // к левому потомку
             }
         }
         catch (...)
@@ -222,6 +248,7 @@ private:
         return result;
     }
 
+    // вставка node потомком узла parent
     Node* insert(Node* node, Node* parent)
     {
         node->parent = parent;
@@ -248,11 +275,13 @@ private:
         }
     }
 
+    // левый поворот
     void rotateLeft(Node* node)
     {
         assert(node->right);
-
+        // при повороте новым корнем поддерева будет правый потомок
         auto subtree_new_root = node->right;
+        // правым потомком старого корня будет бывший левый потомок нового корня
         node->right = subtree_new_root->left;
 
         if (subtree_new_root->left)
@@ -265,16 +294,18 @@ private:
             node->parent->left = subtree_new_root;
         else
             node->parent->right = subtree_new_root;
-
+        // левым потомком нового корня будет старый корень
         subtree_new_root->left = node;
         node->parent = subtree_new_root;
     }
 
+    // правый поворот
     void rotateRight(Node* node)
     {
         assert(node->left);
-
+        // новым корнем поддерева будет левый потомок
         auto subtree_new_root = node->left;
+        // левым потомком старого корня будет бывший правый потомок нового корня
         node->left = subtree_new_root->right;
 
         if (subtree_new_root->right)
@@ -287,40 +318,43 @@ private:
             node->parent->right = subtree_new_root;
         else
             node->parent->left = subtree_new_root;
-
+        // правым потомком нового корня будет старый корень
         subtree_new_root->right = node;
         node->parent = subtree_new_root;
     }
 
+    // восстановление красно-черных свойств после вставки
     void rebalanceInsertion(Node* node)
     {
         while (node != root && node->parent->color == Color::Red)
-        {
-            auto grandparent = node->parent->parent;
+        { // если нарушено красно-черное свойство (узел и предок - красные)
+            auto grandparent = node->parent->parent; // предок родителя (дед)
             if (node->parent == grandparent->left)
-            {
-                auto uncle = grandparent->right;
+            { // если предок - левый сын деда
+                auto uncle = grandparent->right; // смежный с родительским узел ("дядя")
                 if (uncle && uncle->color == Color::Red)
-                {
+                { // если дядя тоже красный
                     node->parent->color = Color::Black;
                     uncle->color = Color::Black;
+                    // задаем деду красный цвет, для восстановления свойств выше по дереву
                     grandparent->color = Color::Red;
                     node = grandparent;
                 }
                 else
-                {
+                {  // дядя узла - черный, узел и его предок - красные
                     if (node == node->parent->right)
-                    {
+                    { // если узел - правый сын, совершаем левый поворот вокруг связи сын-предок
                         node = node->parent;
                         rotateLeft(node);
                     }
                     node->parent->color = Color::Black;
                     grandparent->color = Color::Red;
+                    // совершаем правый поворот вокруг связи предок-дед
                     rotateRight(grandparent);
                 }
             }
-            else
-            {
+            else // если предок - правый сын деда
+            {  // то же, что и выше, только вмето левого - правый и наоборот
                 auto uncle = grandparent->left;
                 if (uncle && uncle->color == Color::Red)
                 {
@@ -345,48 +379,50 @@ private:
         root->color = Color::Black;
     }
 
+    // восстановление красно-черных свойств после удаления
     void rebalanceDeletion(Node* node, Node* parent)
     {
         while (node != root && (!node || node->color == Color::Black))
         {
             if (node == parent->left)
-            {
-                Node* sibling = parent->right;
+            { // если узел левый потомок
+                Node* sibling = parent->right; // смежный узел ("брат") узлу node
 
                 if (sibling->color == Color::Red)
-                {
+                { // если брат - красный, то все его потомки черные, можем обменять цвета
                     sibling->color = Color::Black;
                     parent->color = Color::Red;
-                    rotateLeft(parent);
-                    sibling = parent->right;
+                    rotateLeft(parent); // и сделать левый поворот вокруг связи предок-брат
+                    sibling = parent->right; // новый (после поворота) брат
                 }
 
                 if ((!sibling->left || sibling->left->color == Color::Black)
                         && (!sibling->right || sibling->right->color == Color::Black))
-                {
+                { // если оба потомка брата - черные, можем забрать окраску брата
                     sibling->color = Color::Red;
                     node = parent;
                     parent = parent->parent;
                 }
                 else
-                {
+                { // не все потомки брата - черные
                     if (!sibling->right || sibling->right->color == Color::Black)
-                    {
-                        sibling->left->color = Color::Black;
-                        sibling->color = Color::Red;
-                        rotateRight(sibling);
+                    { // если правый потомок брата - черный
+                        sibling->left->color = Color::Black; // красим левого потомка
+                        sibling->color = Color::Red; // забираем окрас у брата
+                        rotateRight(sibling); // и совершаем правый поворот
                         sibling = parent->right;
                     }
+                    // выполняем обмен цветов
                     sibling->color = parent->color;
                     parent->color = Color::Black;
                     if (sibling->right)
                         sibling->right->color = Color::Black;
-                    rotateLeft(parent);
+                    rotateLeft(parent); // и совершаем правый поворот
                     break;
                 }
             }
-            else
-            {
+            else // если узел правый потомок
+            { // то же, что и выше, только вмето левого - правый и наоборот
                 Node* sibling = parent->left;
 
                 if (sibling->color == Color::Red)
