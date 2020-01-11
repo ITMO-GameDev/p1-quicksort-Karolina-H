@@ -28,8 +28,8 @@ public:
 #endif
 
 private:
-	FSAllocator* fs_al = nullptr;
-	CoaleseAllocator* co_al = nullptr;
+	FSAllocator* fs_al = nullptr; // использует FSAllocator для запросов памяти <= 512 байт
+	CoaleseAllocator* co_al = nullptr; // > 512
 };
 
 #endif // !MEMALLOCATOR_H_INCLUDED
